@@ -121,6 +121,9 @@ object Embedding {
       bw.write(movieId + ":" + model.getVectors(movieId).mkString(" ") + "\n")
     }
     bw.close()
+    println("finish write to file")
+    val save_path: String = embFolderPath.getPath + embOutputFilename
+    println(s"$save_path")
 
     if (saveToRedis) {
       val redisClient = new Jedis(redisEndpoint, redisPort)
@@ -279,8 +282,8 @@ object Embedding {
     val embLength = 10
 
     val samples = processItemSequence(spark, rawSampleDataPath)
-    val model = trainItem2vec(spark, samples, embLength, "item2vecEmb.csv", saveToRedis = false, "i2vEmb")
-    //graphEmb(samples, spark, embLength, "itemGraphEmb.csv", saveToRedis = true, "graphEmb")
+//    val model = trainItem2vec(spark, samples, embLength, "item2vecEmb.csv", saveToRedis = false, "i2vEmb")
+    graphEmb(samples, spark, embLength, "itemGraphEmb.csv", saveToRedis = false, "graphEmb")
     //generateUserEmb(spark, rawSampleDataPath, model, embLength, "userEmb.csv", saveToRedis = false, "uEmb")
   }
 }
