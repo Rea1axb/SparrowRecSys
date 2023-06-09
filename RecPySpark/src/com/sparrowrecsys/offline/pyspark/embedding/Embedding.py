@@ -10,6 +10,7 @@ import random
 from collections import defaultdict
 import numpy as np
 from pyspark.sql import functions as F
+import findspark
 
 
 class UdfFunction:
@@ -61,10 +62,14 @@ def embeddingLSH(spark, movieEmbMap):
     embBucketResult.show(10, truncate=False)
     print("Approximately searching for 5 nearest neighbors of the sample embedding:")
     sampleEmb = Vectors.dense(0.795, 0.583, 1.120, 0.850, 0.174, -0.839, -0.0633, 0.249, 0.673, -0.237)
+    sampelBucketResult = bucketModel.transform(spark.createDataFrame([(425, sampleEmb)]).toDF("movieID", "emb"))
+    print(f"sample bucket result:")
+    print(sampelBucketResult.head())
     bucketModel.approxNearestNeighbors(movieEmbDF, sampleEmb, 5).show(truncate=False)
 
 
 def trainItem2vec(spark, samples, embLength, embOutputPath, saveToRedis, redisKeyPrefix):
+    print(f"save result to {embOutputPath}")
     word2vec = Word2Vec().setVectorSize(embLength).setWindowSize(5).setNumIterations(10)
     model = word2vec.fit(samples)
     synonyms = model.findSynonyms("158", 20)
@@ -162,6 +167,68 @@ def graphEmb(samples, spark, embLength, embOutputFilename, saveToRedis, redisKey
     rddSamples = spark.sparkContext.parallelize(newSamples)
     trainItem2vec(spark, rddSamples, embLength, embOutputFilename, saveToRedis, redisKeyPrefix)
 
+def oneNodeWalk(transitionMatrix, itemDistribution, sampleLength, p, q):
+    sample = []
+    randomDouble = random.random()
+    firstItem = ""
+    accumulateProb = 0.0
+    for item, prob in itemDistribution.items():
+        accumulateProb += prob
+        if accumulateProb >= randomDouble:
+            firstItem = item
+            break
+    sample.append(firstItem)
+    curElement = firstItem
+    preElement = None
+    i = 1
+    while i < sampleLength:
+        if (curElement not in itemDistribution) or (curElement not in transitionMatrix):
+            break
+        probDistribution = transitionMatrix[curElement]
+
+        if preElement is not None:
+            noNormprobDistribution = defaultdict(dict)
+            prob_all = 0.0
+            for item, prob in probDistribution.items():
+                if item == preElement:
+                    # d(t, x) = 0
+                    noNormprobDistribution[item] = prob * 1.0 / p
+                elif item in transitionMatrix[preElement]:
+                    # d(t, x) = 1
+                    noNormprobDistribution[item] = prob
+                else:
+                    # d(t, x) = 2
+                    noNormprobDistribution[item] = prob * 1.0 / q
+                prob_all += noNormprobDistribution[item]
+            for item, prob in noNormprobDistribution.items():
+                probDistribution[item] = prob / prob_all
+
+        randomDouble = random.random()
+        accumulateProb = 0.0
+        for item, prob in probDistribution.items():
+            accumulateProb += prob
+            if accumulateProb >= randomDouble:
+                curElement = item
+                break
+        sample.append(curElement)
+        i += 1
+    return sample
+
+
+def nodeWalk(transitionMatrix, itemDistribution, sampleCount, sampleLength, p, q):
+    samples = []
+    for i in range(sampleCount):
+        samples.append(oneNodeWalk(transitionMatrix, itemDistribution, sampleLength, p, q))
+    return samples
+
+def node2vec(samples, spark, embLength, embOutputFilename, p, q, saveToRedis, redisKeyPrefix):
+    transitionMatrix, itemDistribution = generateTransitionMatrix(samples)
+    samplesCount = 20000
+    sampleLength = 10
+    newSamples = nodeWalk(transitionMatrix, itemDistribution, samplesCount, sampleLength, p, q)
+    rddSamples = spark.sparkContext.parallelize(newSamples)
+    trainItem2vec(spark, rddSamples, embLength, embOutputFilename, saveToRedis, redisKeyPrefix)
+
 
 def generateUserEmb(spark, rawSampleDataPath, model, embLength, embOutputPath, saveToRedis, redisKeyPrefix):
     ratingSamples = spark.read.format("csv").option("header", "true").load(rawSampleDataPath)
@@ -184,18 +251,24 @@ def generateUserEmb(spark, rawSampleDataPath, model, embLength, embOutputPath, s
 
 
 if __name__ == '__main__':
+    findspark.init()
     conf = SparkConf().setAppName('ctrModel').setMaster('local')
     spark = SparkSession.builder.config(conf=conf).getOrCreate()
     # Change to your own filepath
-    file_path = 'file:///home/hadoop/SparrowRecSys/src/main/resources'
+    file_path = "C:/Users/lenovo/workspace/SparrowRecSys-master/src/main/resources"
     rawSampleDataPath = file_path + "/webroot/sampledata/ratings.csv"
     embLength = 10
     samples = processItemSequence(spark, rawSampleDataPath)
+    target_save_path = "C:/Users/lenovo/workspace/SparrowRecSys-master/target/classes/webroot/py_modeldata"
     model = trainItem2vec(spark, samples, embLength,
-                          embOutputPath=file_path[7:] + "/webroot/modeldata2/item2vecEmb.csv", saveToRedis=False,
+                          embOutputPath=target_save_path + "/item2vecEmb.csv", saveToRedis=False,
                           redisKeyPrefix="i2vEmb")
-    graphEmb(samples, spark, embLength, embOutputFilename=file_path[7:] + "/webroot/modeldata2/itemGraphEmb.csv",
-             saveToRedis=True, redisKeyPrefix="graphEmb")
-    generateUserEmb(spark, rawSampleDataPath, model, embLength,
-                    embOutputPath=file_path[7:] + "/webroot/modeldata2/userEmb.csv", saveToRedis=False,
-                    redisKeyPrefix="uEmb")
+    graphEmb(samples, spark, embLength, embOutputFilename=target_save_path + "/itemGraphEmb.csv",
+             saveToRedis=False, redisKeyPrefix="graphEmb")
+    p = 0.5
+    q = 2.0
+    node2vec(samples, spark, embLength, embOutputFilename=target_save_path + "/node2vecEmb.csv", p=p, q=q,
+             saveToRedis=False, redisKeyPrefix="nodeEmb")
+    # generateUserEmb(spark, rawSampleDataPath, model, embLength,
+    #                 embOutputPath=file_path[7:] + "/webroot/modeldata2/userEmb.csv", saveToRedis=False,
+    #                 redisKeyPrefix="uEmb")
