@@ -11,6 +11,8 @@ from collections import defaultdict
 import numpy as np
 from pyspark.sql import functions as F
 import findspark
+import matplotlib.pyplot as plt
+import networkx as nx
 
 
 class UdfFunction:
@@ -53,7 +55,7 @@ def embeddingLSH(spark, movieEmbMap):
         movieEmbSeq.append((key, Vectors.dense(embedding_list)))
     movieEmbDF = spark.createDataFrame(movieEmbSeq).toDF("movieId", "emb")
     bucketProjectionLSH = BucketedRandomProjectionLSH(inputCol="emb", outputCol="bucketId", bucketLength=0.1,
-                                                      numHashTables=3)
+                                                      numHashTables=1)
     bucketModel = bucketProjectionLSH.fit(movieEmbDF)
     embBucketResult = bucketModel.transform(movieEmbDF)
     print("movieId, emb, bucketId schema:")
@@ -66,15 +68,16 @@ def embeddingLSH(spark, movieEmbMap):
     print(f"sample bucket result:")
     print(sampelBucketResult.head())
     bucketModel.approxNearestNeighbors(movieEmbDF, sampleEmb, 5).show(truncate=False)
+    return embBucketResult
 
 
 def trainItem2vec(spark, samples, embLength, embOutputPath, saveToRedis, redisKeyPrefix):
     print(f"save result to {embOutputPath}")
     word2vec = Word2Vec().setVectorSize(embLength).setWindowSize(5).setNumIterations(10)
     model = word2vec.fit(samples)
-    synonyms = model.findSynonyms("158", 20)
-    for synonym, cosineSimilarity in synonyms:
-        print(synonym, cosineSimilarity)
+    # synonyms = model.findSynonyms("158", 5)
+    # for synonym, cosineSimilarity in synonyms:
+    #     print(synonym, cosineSimilarity)
     embOutputDir = '/'.join(embOutputPath.split('/')[:-1])
     if not os.path.exists(embOutputDir):
         os.makedirs(embOutputDir)
@@ -82,8 +85,8 @@ def trainItem2vec(spark, samples, embLength, embOutputPath, saveToRedis, redisKe
         for movie_id in model.getVectors():
             vectors = " ".join([str(emb) for emb in model.getVectors()[movie_id]])
             f.write(movie_id + ":" + vectors + "\n")
-    embeddingLSH(spark, model.getVectors())
-    return model
+    lshResult = embeddingLSH(spark, model.getVectors())
+    return model, lshResult
 
 
 def generate_pair(x):
@@ -219,15 +222,55 @@ def nodeWalk(transitionMatrix, itemDistribution, sampleCount, sampleLength, p, q
     samples = []
     for i in range(sampleCount):
         samples.append(oneNodeWalk(transitionMatrix, itemDistribution, sampleLength, p, q))
+    # print(f"select samples:{samples}")
     return samples
 
-def node2vec(samples, spark, embLength, embOutputFilename, p, q, saveToRedis, redisKeyPrefix):
+def plot_graph(transitionMatrix, lshResult):
+    G = nx.Graph()
+    print(type(lshResult))
+    print(lshResult.count())
+    lshResult.show(10, truncate=False)
+    bucketHash = dict()
+    bucketCnt = 0
+    color_dict = dict()
+    color_list = list()
+    id_list = list()
+    for id, emb, bucket in lshResult.collect():
+        if bucket[0][0] not in color_dict:
+            # print(bucket[0][0])
+            # bucketHash[bucket[0][0]] = bucketCnt
+            color_dict[bucket[0][0]] = [np.round(np.random.rand(),1), np.round(np.random.rand(),1), np.round(np.random.rand(),1)]
+            bucketCnt += 1
+        G.add_node(id)
+        id_list.append(id)
+        color_list.append(color_dict[bucket[0][0]])
+    for u, to_list in transitionMatrix.items():
+        if u not in id_list:
+            continue
+        for v, w in to_list.items():
+            if v not in id_list or w < 0.01:
+                continue
+            G.add_edge(u, v)
+    print(f"bucket num:{bucketCnt}")
+    print(f"len color list:{len(color_list)}")
+    # nx.draw_networkx(G, node_size=100, node_color=color_dict, cmap=plt.cm.Dark2)
+    nx.draw_networkx(G, with_labels=False, node_color=color_list, node_size=20)
+    plt.show()
+
+
+
+def node2vec(samples, spark, embLength, embOutputFilename, saveToRedis, redisKeyPrefix):
     transitionMatrix, itemDistribution = generateTransitionMatrix(samples)
     samplesCount = 20000
     sampleLength = 10
+    # samplesCount = 50
+    # sampleLength = 10
+    p = 1
+    q = 0.1
     newSamples = nodeWalk(transitionMatrix, itemDistribution, samplesCount, sampleLength, p, q)
     rddSamples = spark.sparkContext.parallelize(newSamples)
-    trainItem2vec(spark, rddSamples, embLength, embOutputFilename, saveToRedis, redisKeyPrefix)
+    model, lshResult = trainItem2vec(spark, rddSamples, embLength, embOutputFilename, saveToRedis, redisKeyPrefix)
+    plot_graph(transitionMatrix, lshResult)
 
 
 def generateUserEmb(spark, rawSampleDataPath, model, embLength, embOutputPath, saveToRedis, redisKeyPrefix):
@@ -260,14 +303,12 @@ if __name__ == '__main__':
     embLength = 10
     samples = processItemSequence(spark, rawSampleDataPath)
     target_save_path = "C:/Users/lenovo/workspace/SparrowRecSys-master/target/classes/webroot/py_modeldata"
-    model = trainItem2vec(spark, samples, embLength,
-                          embOutputPath=target_save_path + "/item2vecEmb.csv", saveToRedis=False,
-                          redisKeyPrefix="i2vEmb")
-    graphEmb(samples, spark, embLength, embOutputFilename=target_save_path + "/itemGraphEmb.csv",
-             saveToRedis=False, redisKeyPrefix="graphEmb")
-    p = 0.5
-    q = 2.0
-    node2vec(samples, spark, embLength, embOutputFilename=target_save_path + "/node2vecEmb.csv", p=p, q=q,
+    # model = trainItem2vec(spark, samples, embLength,
+    #                       embOutputPath=target_save_path + "/item2vecEmb.csv", saveToRedis=False,
+    #                       redisKeyPrefix="i2vEmb")
+    # graphEmb(samples, spark, embLength, embOutputFilename=target_save_path + "/itemGraphEmb.csv",
+    #          saveToRedis=False, redisKeyPrefix="graphEmb")
+    node2vec(samples, spark, embLength, embOutputFilename=target_save_path + "/node2vecEmb.csv",
              saveToRedis=False, redisKeyPrefix="nodeEmb")
     # generateUserEmb(spark, rawSampleDataPath, model, embLength,
     #                 embOutputPath=file_path[7:] + "/webroot/modeldata2/userEmb.csv", saveToRedis=False,
