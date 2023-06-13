@@ -46,6 +46,7 @@ public class DataManager {
             loadMovieFeatures("mf:");
         }
 
+
         loadUserEmb(userEmbPath, userRedisKey);
     }
 

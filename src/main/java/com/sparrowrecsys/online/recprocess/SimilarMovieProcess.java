@@ -2,6 +2,8 @@ package com.sparrowrecsys.online.recprocess;
 
 import com.sparrowrecsys.online.datamanager.DataManager;
 import com.sparrowrecsys.online.datamanager.Movie;
+
+import java.lang.management.MonitorInfo;
 import java.util.*;
 
 /**
@@ -22,7 +24,8 @@ public class SimilarMovieProcess {
         if (null == movie){
             return new ArrayList<>();
         }
-        List<Movie> candidates = candidateGenerator(movie);
+//        List<Movie> candidates = candidateGenerator(movie);
+        List<Movie> candidates = retrievalCandidatesByEmbedding(movie, 100);
         List<Movie> rankedList = ranker(movie, candidates, model);
 
         if (rankedList.size() > size){
@@ -101,11 +104,20 @@ public class SimilarMovieProcess {
         }
 
         List<Map.Entry<Movie,Double>> movieScoreList = new ArrayList<>(movieScoreMap.entrySet());
+//        Collections.sort(movieScoreList, new Comparator<Map.Entry<Movie, Double> >() {
+//            public int compare(Map.Entry<Movie, Double> o1,
+//                               Map.Entry<Movie, Double> o2)
+//            {
+//                return (o2.getValue()).compareTo(o1.getValue());
+//            }
+//        });
         movieScoreList.sort(Map.Entry.comparingByValue());
+        Collections.reverse(movieScoreList);
 
         List<Movie> candidates = new ArrayList<>();
         for (Map.Entry<Movie,Double> movieScoreEntry : movieScoreList){
             candidates.add(movieScoreEntry.getKey());
+            System.out.println(movieScoreEntry.getValue());
         }
 
         return candidates.subList(0, Math.min(candidates.size(), size));

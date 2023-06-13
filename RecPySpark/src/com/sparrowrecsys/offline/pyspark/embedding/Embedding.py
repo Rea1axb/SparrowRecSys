@@ -1,18 +1,20 @@
+import findspark
+import matplotlib.pyplot as plt
+import networkx as nx
+import numpy as np
 import os
+import random
+import redis
+
+from collections import defaultdict
 from pyspark import SparkConf
+from pyspark.sql import functions as F
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import *
 from pyspark.sql.types import *
 from pyspark.ml.feature import BucketedRandomProjectionLSH
 from pyspark.mllib.feature import Word2Vec
 from pyspark.ml.linalg import Vectors
-import random
-from collections import defaultdict
-import numpy as np
-from pyspark.sql import functions as F
-import findspark
-import matplotlib.pyplot as plt
-import networkx as nx
 
 
 class UdfFunction:
@@ -85,6 +87,11 @@ def trainItem2vec(spark, samples, embLength, embOutputPath, saveToRedis, redisKe
         for movie_id in model.getVectors():
             vectors = " ".join([str(emb) for emb in model.getVectors()[movie_id]])
             f.write(movie_id + ":" + vectors + "\n")
+    if saveToRedis:
+        r = redis.Redis(decode_responses=True)
+        for movie_id in model.getVectors():
+            vectors = " ".join([str(emb) for emb in model.getVectors()[movie_id]])
+            r.set(redisKeyPrefix + ":" + movie_id, vectors)
     lshResult = embeddingLSH(spark, model.getVectors())
     return model, lshResult
 
@@ -309,7 +316,7 @@ if __name__ == '__main__':
     # graphEmb(samples, spark, embLength, embOutputFilename=target_save_path + "/itemGraphEmb.csv",
     #          saveToRedis=False, redisKeyPrefix="graphEmb")
     node2vec(samples, spark, embLength, embOutputFilename=target_save_path + "/node2vecEmb.csv",
-             saveToRedis=False, redisKeyPrefix="nodeEmb")
+             saveToRedis=True, redisKeyPrefix="nodeEmb")
     # generateUserEmb(spark, rawSampleDataPath, model, embLength,
     #                 embOutputPath=file_path[7:] + "/webroot/modeldata2/userEmb.csv", saveToRedis=False,
     #                 redisKeyPrefix="uEmb")
